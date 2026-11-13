@@ -6,6 +6,16 @@ A [magpie](https://usemagpie.ai) provider plugin for [free-pi](https://freepi.ai
 
 Unofficial; the protocol was reverse-engineered from free-pi-cli (same shape as [FreePi2API](https://github.com/ErfanBagheri404/FreePi2API)).
 
+> This is a fork of [aqiu817/magpie-freepi](https://github.com/aqiu817/magpie-freepi) (MIT) that removes the upstream conversation-to-account binding when magpie rotates accounts.
+
+## Fork changes
+
+The upstream binds a conversation to whichever account first sent its `messages` prefix; another account replaying that prefix gets an **HTTP 200 whose body is a refusal**: `This conversation belongs to another free-pi account.`. magpie's `routing=rotate` changes accounts per request, so multi-turn chats hit it at random.
+
+- **Per-account conversation isolation**: a stable prefix derived from the account token is inserted as the first `system` message, so each account sees a distinct prefix. Disable with `conversationIsolation: "off"`.
+- **Refusals become real errors**: the refusal text is detected in both JSON and SSE responses and turned into `409 {"error":{"code":"account_mismatch"}}`, so it never lands in a downstream context as a model reply.
+- **Version gate**: cli version pin raised from 0.6.16 to 0.6.20 (upstream now requires >= 0.6.19).
+
 ## Features
 
 - **Direct upstream**: credentials live in magpie's `plugin-auth.json` (mode 600); requests ride magpie's proxy chain for this provider (switchable to direct via options).
@@ -45,6 +55,7 @@ Set as JSON under Plugins → Installed → freepi options (or `magpie plugin op
 |---|---|---|
 | `direct` | `false` | Bypass magpie's proxy chain and hit the upstream directly |
 | `adCount` | `true` | Show an aside window with this run's reported impression count (never used by routing) |
+| `conversationIsolation` | `"account"` | Stable per-account conversation prefix; `"off"` restores the upstream's original behavior |
 
 ## Disclaimer
 
@@ -52,6 +63,7 @@ Set as JSON under Plugins → Installed → freepi options (or `magpie plugin op
 - **Ads**: free-pi pays for inference with ad revenue. The plugin mirrors what headless proxies do — report banner impressions automatically (impressions only, never clicks). Use the official CLI if you'd rather support the service with real browsing.
 - **Data**: the upstream marks `muse-spark-1.3-contributor` as training on your data (free-pi + Meta), and sign-in requires consenting to sessions possibly being used for training.
 - **Quota**: rated models consume daily credits per the upstream's rules; exhausted credits fall back to a slower lane or a wait.
+- **Account policy**: conversation isolation works around free-pi's explicit "one account per person / no account rotation" rule; the official CLI has no switch for it. Consider the risk of accounts being flagged or banned before enabling it.
 - Personal use only.
 
 ## Development

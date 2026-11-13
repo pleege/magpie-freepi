@@ -21,10 +21,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aqiu817/magpie-freepi.git"
+    "url": "git+https://github.com/pleege/magpie-freepi.git"
   },
-  "homepage": "https://github.com/aqiu817/magpie-freepi#readme",
-  "bugs": "https://github.com/aqiu817/magpie-freepi/issues",
+  "homepage": "https://github.com/pleege/magpie-freepi#readme",
+  "bugs": "https://github.com/pleege/magpie-freepi/issues",
   "magpie": {
     "icon": "https://freepi.ai/icon.svg",
     "maxConcurrency": 4

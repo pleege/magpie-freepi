@@ -3,6 +3,7 @@
 // The only exports are the plugin and _internal (for tests); magpie calls every
 // exported function as a plugin, so helpers must stay in lib/.
 
+import { createHash } from "node:crypto"
 import {
   BASE,
   authHeaders,
@@ -16,6 +17,80 @@ import {
 import { FALLBACK_MODEL_IDS, MODEL_LIMITS, parseCatalog } from "./lib/catalog.mjs"
 
 const PROVIDER = "freepi"
+
+// free-pi binds a conversation to whichever account first sent its messages; any
+// other account replaying that prefix gets a refusal *inside a 200 response*.
+// A per-account system prefix keeps each account's conversations distinct.
+const REJECTION = "belongs to another free-pi account"
+
+function accountTag(token, accountId, mode) {
+  if (mode === "off") return ""
+  const seed = token || accountId || "anonymous"
+  const short = createHash("sha256").update(seed).digest("hex").slice(0, 12)
+  return `[fp-${short}]`
+}
+
+function tagMessages(body, tag) {
+  if (!tag || typeof body !== "string") return body
+  let parsed
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return body
+  }
+  if (!Array.isArray(parsed?.messages) || parsed.messages.length === 0) return body
+  const first = parsed.messages[0]
+  if (first?.role === "system" && typeof first.content === "string" && first.content.startsWith("[fp-")) return body
+  parsed.messages = [{ role: "system", content: tag }, ...parsed.messages]
+  return JSON.stringify(parsed)
+}
+
+function rejectionText(text) {
+  const at = text.indexOf(REJECTION)
+  if (at < 0) return ""
+  const start = Math.max(0, text.lastIndexOf("This conversation", at))
+  return text.slice(start, at + REJECTION.length + 120).replace(/\\n/g, " ").slice(0, 200)
+}
+
+function sseRejection(body) {
+  let at = 0
+  while ((at = body.indexOf(REJECTION, at)) >= 0) {
+    const start = Math.max(0, body.lastIndexOf("This conversation", at))
+    return body.slice(start, at + REJECTION.length + 120).replace(/\s+/g, " ").slice(0, 200)
+  }
+  return ""
+}
+
+async function toRejection(res) {
+  const probe = await res.clone().text()
+  const text = rejectionText(probe)
+  if (!text) return res
+  const err = { error: { message: `free-pi: ${text}`, code: "account_mismatch", type: "free_pi_error" } }
+  return new Response(JSON.stringify(err), { status: 409, headers: { "content-type": "application/json" } })
+}
+
+async function toStreamingRejection(res) {
+  const clone = res.clone()
+  if (!clone.body) return res
+  const reader = clone.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ""
+  let found = ""
+  try {
+    while (buf.length < 8192) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      found = sseRejection(buf)
+      if (found) break
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+  if (!found) return res
+  const err = { error: { message: `free-pi: ${found}`, code: "account_mismatch", type: "free_pi_error" } }
+  return new Response(JSON.stringify(err), { status: 409, headers: { "content-type": "application/json" } })
+}
 
 // Catalog entries carry no limits; models.dev (via stats_id) fills most, the rest
 // stay conservative until measured — the upstream may still cap per request.
@@ -142,6 +217,8 @@ export const FreePiPlugin = async (input) => {
       async loader(getAuth) {
         const auth = await getAuth()
         const token = auth?.type === "oauth" ? auth.access : null
+        const mode = opts().conversationIsolation ?? "account"
+        const tag = accountTag(token, auth?.accountId, mode)
         // options.direct: bypass magpie's proxy chain (default is to ride it).
         const doFetch = opts().direct ? (url, init) => fetch(url, { ...init, proxy: false }) : fetch
         return {
@@ -159,7 +236,10 @@ export const FreePiPlugin = async (input) => {
                 })
                 .catch(() => {})
             }
-            return doFetch(req, { ...init, headers })
+            const tagged = tag ? tagMessages(init?.body, tag) : init?.body
+            const res = await doFetch(req, { ...init, headers, ...(tagged !== undefined ? { body: tagged } : {}) })
+            const isStream = (res.headers.get("content-type") ?? "").includes("event-stream")
+            return isStream ? toStreamingRejection(res) : toRejection(res)
           },
         }
       },
@@ -221,4 +301,4 @@ export const FreePiPlugin = async (input) => {
   }
 }
 
-export const _internal = { staticModels, modelMeta, dailyWindow }
+export const _internal = { staticModels, modelMeta, dailyWindow, accountTag, tagMessages, toRejection, toStreamingRejection }

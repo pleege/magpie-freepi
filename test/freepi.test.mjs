@@ -423,6 +423,80 @@ test("provider.models: live catalog maps rate/free; failure keeps magpie's list"
   })
 })
 
+test("accountTag: stable per account, distinct across accounts, empty when off", () => {
+  const a = _internal.accountTag("jwt-a", null, "account")
+  const b = _internal.accountTag("jwt-b", null, "account")
+  assert.match(a, /^\[fp-[0-9a-f]{12}\]$/)
+  assert.equal(a, _internal.accountTag("jwt-a", "whatever", "account"))
+  assert.notEqual(a, b)
+  assert.equal(_internal.accountTag("jwt-a", null, "off"), "")
+  assert.equal(_internal.accountTag(null, "account-id", "account"), _internal.accountTag(null, "account-id", "account"))
+})
+
+test("tagMessages: inserts one system prefix, leaves other bodies alone", () => {
+  const body = JSON.stringify({ model: "particle", messages: [{ role: "user", content: "hi" }] })
+  const tagged = JSON.parse(_internal.tagMessages(body, "[fp-x]"))
+  assert.equal(tagged.messages.length, 2)
+  assert.deepEqual(tagged.messages[0], { role: "system", content: "[fp-x]" })
+  const twice = JSON.parse(_internal.tagMessages(JSON.stringify(tagged), "[fp-y]"))
+  assert.equal(twice.messages.length, 2)
+  assert.equal(twice.messages[0].content, "[fp-x]")
+  assert.equal(_internal.tagMessages("not-json", "[fp-x]"), "not-json")
+  assert.equal(_internal.tagMessages("{}", "[fp-x]"), "{}")
+  assert.equal(_internal.tagMessages(undefined, "[fp-x]"), undefined)
+})
+
+test("loader.fetch: chat body carries the account prefix; isolation=off leaves it untouched", async () => {
+  await withFetch(
+    [
+      ["/v1/chat/completions", () => json({ ok: true })],
+      ["/ads/next", () => json({ ad_id: "a1", click_token: "ct" })],
+      ["/ads/impression", () => json({ ok: true })],
+    ],
+    async (f) => {
+      const hooks = await FreePiPlugin({})
+      const { fetch: wrapped } = await hooks.auth.loader(async () => ({ type: "oauth", access: "jwt-a" }))
+      const body = JSON.stringify({ model: "particle", messages: [{ role: "user", content: "hi" }] })
+      await wrapped(`${BASE}/v1/chat/completions`, { method: "POST", body })
+      const chat = f.calls.find((c) => c.url.includes("/v1/chat/completions"))
+      const sent = JSON.parse(chat.init.body)
+      assert.equal(sent.messages[0].content, _internal.accountTag("jwt-a", null, "account"))
+
+      const off = await FreePiPlugin({ magpie: { options: { conversationIsolation: "off" } } })
+      const { fetch: plain } = await off.auth.loader(async () => ({ type: "oauth", access: "jwt-a" }))
+      await plain(`${BASE}/v1/chat/completions`, { method: "POST", body })
+      const last = f.calls.filter((c) => c.url.includes("/v1/chat/completions")).pop()
+      assert.equal(last.init.body, body)
+    },
+  )
+})
+
+test("toRejection: 200 refusal becomes 409, normal 200 passes through untouched", async () => {
+  const refusal = JSON.stringify({ choices: [{ message: { content: "This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed; use one account per person." } }] })
+  const bad = await _internal.toRejection(json(JSON.parse(refusal)))
+  assert.equal(bad.status, 409)
+  const err = await bad.json()
+  assert.equal(err.error.code, "account_mismatch")
+  assert.match(err.error.message, /belongs to another free-pi account/)
+
+  const ok = await _internal.toRejection(json({ choices: [{ message: { content: "hello" } }] }))
+  assert.equal(ok.status, 200)
+  assert.deepEqual(await ok.json(), { choices: [{ message: { content: "hello" } }] })
+})
+
+test("toStreamingRejection: refusal in SSE becomes 409, normal SSE stays a stream", async () => {
+  const sse = (text) => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  })
+  const bad = await _internal.toStreamingRejection(sse("This conversation belongs to another free-pi account. Sharing or rotating accounts isn't allowed"))
+  assert.equal(bad.status, 409)
+  assert.equal((await bad.json()).error.code, "account_mismatch")
+  const ok = await _internal.toStreamingRejection(sse("hello"))
+  assert.equal(ok.headers.get("content-type"), "text/event-stream")
+  assert.match(await ok.text(), /hello/)
+})
+
 // Keep last: mutates the module-level client-version pin.
 test("calibrateClientVersion: numeric compare, garbage ignored, never downgrades", () => {
   assert.equal(calibrateClientVersion({ min: "0.10.0" }), "0.10.0")

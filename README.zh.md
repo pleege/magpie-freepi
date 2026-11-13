@@ -2,9 +2,19 @@
 
 > [English](README.md) · 简体中文
 
+> 本仓库是 [aqiu817/magpie-freepi](https://github.com/aqiu817/magpie-freepi) 的 fork，用于解除上游「对话绑定账号」在 magpie 多账号轮换下的冲突。原项目为 MIT，向原作者致谢。
+
 把 [free-pi](https://freepi.ai)（`api.freepi.ai`，看广告换免费模型的聚合网关）接入 [magpie](https://usemagpie.ai) 的供应商插件。直连上游，无需任何本地代理或额外进程。
 
 非官方插件，通过逆向 free-pi-cli 的协议实现（结构同 [FreePi2API](https://github.com/ErfanBagheri404/FreePi2API)）。
+
+## 本 fork 的改动
+
+上游把一段对话按 `messages` 的内容前缀绑定到首次提交它的账号，其他账号重放同一前缀时会收到 **HTTP 200、正文是拒答**：`This conversation belongs to another free-pi account.`。magpie 的 `routing=rotate` 每请求换账号，因此多轮对话会随机撞上。
+
+- **每账号会话隔离**：转发前按账号 token 生成稳定前缀，插为第一条 `system` 消息，让各账号看到的内容前缀不同，互不绑定。可通过 `conversationIsolation: "off"` 关闭。
+- **拒答转成真错误**：识别该拒答（非流式 JSON 与 SSE 流式都覆盖），转成 `409 {"error":{"code":"account_mismatch"}}`，避免拒答文案被当成模型回复写入下游上下文。
+- **版本门槛**：cli 版本 pin 由 0.6.16 提到 0.6.20（上游 2026-11-13 起要求 ≥0.6.19）。
 
 ## 特性
 
@@ -45,6 +55,7 @@ magpie provider test freepi
 |---|---|---|
 | `direct` | `false` | `true` 时绕过 magpie 代理链直连上游 |
 | `adCount` | `true` | 在账号卡片以 aside 窗口显示本次运行已上报的广告曝光数（不参与路由） |
+| `conversationIsolation` | `"account"` | 每账号注入稳定会话前缀；`"off"` 关闭（恢复上游原行为） |
 
 ## 免责声明
 
@@ -52,6 +63,7 @@ magpie provider test freepi
 - **广告机制**：free-pi 以广告收入支付推理成本，插件仿照 headless 代理的通行做法自动上报横幅曝光（仅曝光、不点击）。请知悉并自行判断是否符合你的使用意愿；如希望以真实浏览支持服务方，请使用官方 CLI。
 - **数据提示**：上游目录标注 `muse-spark-1.3-contributor` 会用你的数据训练（free-pi + Meta）；登录时上游亦要求同意「会话可能用于训练模型」条款。介意者请避开相关模型或自行斟酌。
 - **额度消耗**：倍率模型按上游规则消耗每日 credits，用完进入慢车道或等待。
+- **账号风控**：会话隔离是绕过上游明确写出的「one account per person / 不许多账号轮换」限制，官方 CLI 没有对应开关。启用前请自行评估账号被风控或封禁的风险。
 - 仅供个人使用，请勿用于绕过付费服务的生产场景。
 
 ## 开发
